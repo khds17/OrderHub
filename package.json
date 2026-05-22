@@ -1,0 +1,18 @@
+{
+  "name": "orderhub",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f db",
+    "db:migrate": "npm run db:migrate -w @orderhub/api",
+    "db:seed": "npm run db:seed -w @orderhub/api",
+    "contracts:build": "npm run build -w @orderhub/contracts",
+    "typecheck": "npm run typecheck -w @orderhub/api"
+  }
+}
