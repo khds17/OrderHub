@@ -116,6 +116,9 @@ From the repo root:
 | `npm run dev -w @orderhub/api`       | Start API on :3001 with hot reload                 |
 | `npm run dev -w @orderhub/web`       | Start Next.js on :3000                             |
 
+Postman: import `postman/OrderHub.postman_collection.json` and
+`postman/OrderHub.local.postman_environment.json` (see [postman/README.md](./postman/README.md)).
+
 ## Notable choices
 
 - **No ORM.** All SQL lives in `*.repository.ts` files. Services orchestrate;
