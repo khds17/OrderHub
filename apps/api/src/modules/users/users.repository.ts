@@ -5,12 +5,14 @@ export type UserPublicRow = {
   id: string;
   email: string;
   name: string;
+  surname: string | null;
+  address: string | null;
   role: UserRole;
   created_at: Date;
   updated_at: Date;
 };
 
-const COLS = `id, email, name, role, created_at, updated_at`;
+const COLS = `id, email, name, surname, address, role, created_at, updated_at`;
 
 export class UsersRepository {
   constructor(private readonly pool: Pool) {}
@@ -32,7 +34,14 @@ export class UsersRepository {
 
   async update(
     id: string,
-    fields: { name?: string; email?: string },
+    fields: {
+      name?: string;
+      email?: string;
+      // `null` clears the column, `undefined` leaves it alone — careful not
+      // to fold them together with `??` below.
+      surname?: string | null;
+      address?: string | null;
+    },
   ): Promise<UserPublicRow | null> {
     const sets: string[] = [];
     const values: unknown[] = [id];
@@ -44,6 +53,14 @@ export class UsersRepository {
     if (fields.email !== undefined) {
       sets.push(`email = $${i++}`);
       values.push(fields.email);
+    }
+    if (fields.surname !== undefined) {
+      sets.push(`surname = $${i++}`);
+      values.push(fields.surname);
+    }
+    if (fields.address !== undefined) {
+      sets.push(`address = $${i++}`);
+      values.push(fields.address);
     }
     if (sets.length === 0) {
       return this.findById(id);

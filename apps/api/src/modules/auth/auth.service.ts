@@ -77,6 +77,42 @@ export class AuthService {
     await this.repo.revokeRefreshToken(tokenHash);
   }
 
+  /**
+   * Change the password for an authenticated user. Verifies the current
+   * password before applying the new hash, then revokes every refresh token
+   * for the user so any session that authenticated against the old password
+   * is forced to log in again.
+   *
+   * Throws:
+   *   - 401 INVALID_CURRENT_PASSWORD if the current password doesn't match.
+   *   - 404 USER_NOT_FOUND if the user vanished mid-call (unusual).
+   *
+   * The "new password must differ from current" rule is enforced upstream
+   * by the Zod ChangePasswordSchema.
+   */
+  async changePassword(input: {
+    userId: string;
+    currentPassword: string;
+    newPassword: string;
+  }): Promise<void> {
+    const user = await this.repo.findUserById(input.userId);
+    if (!user) {
+      throw new AppError(404, 'USER_NOT_FOUND', 'User not found');
+    }
+    const ok = await bcrypt.compare(input.currentPassword, user.password_hash);
+    if (!ok) {
+      throw new UnauthorizedError(
+        'Current password is incorrect',
+        'INVALID_CURRENT_PASSWORD',
+      );
+    }
+    const newHash = await bcrypt.hash(input.newPassword, BCRYPT_ROUNDS);
+    await this.repo.updatePasswordHash(input.userId, newHash);
+    // Defensive: kill all sessions so a previously-leaked refresh token
+    // can't continue to mint access tokens after the credential rotated.
+    await this.repo.revokeAllRefreshTokensForUser(input.userId);
+  }
+
   private async issueTokens(user: UserRow): Promise<AuthTokens> {
     const accessToken = this.signAccessToken(user);
     const refreshToken = randomBytes(32).toString('hex');
@@ -104,6 +140,8 @@ function toPublic(row: UserRow): User {
     id: row.id,
     email: row.email,
     name: row.name,
+    surname: row.surname,
+    address: row.address,
     role: row.role,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),

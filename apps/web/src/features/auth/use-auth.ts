@@ -12,6 +12,10 @@ type AuthState = {
   login: (email: string, password: string) => Promise<User>;
   register: (email: string, password: string, name: string) => Promise<User>;
   logout: () => Promise<void>;
+  /** Re-fetch /users/me and replace the cached user. Called after a profile
+   *  save so the nav, profile form, and any other readers reflect the new
+   *  values without a full page reload. */
+  refreshUser: () => Promise<User | null>;
 };
 
 export const useAuth = create<AuthState>((set) => ({
@@ -56,6 +60,19 @@ export const useAuth = create<AuthState>((set) => ({
     }
     tokenStorage.clear();
     set({ user: null, status: 'unauthenticated' });
+  },
+  async refreshUser() {
+    try {
+      const { user } = await api.users.me();
+      set({ user, status: 'authenticated' });
+      return user;
+    } catch {
+      // Surface as "not signed in" rather than half-stale; the api-client's
+      // 401 path also clears tokens, so this set keeps state internally
+      // consistent.
+      set({ user: null, status: 'unauthenticated' });
+      return null;
+    }
   },
 }));
 

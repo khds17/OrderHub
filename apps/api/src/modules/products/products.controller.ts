@@ -10,7 +10,14 @@ export class ProductsController {
   constructor(private readonly service: ProductsService) {}
 
   list = async (
-    req: FastifyRequest<{ Querystring: { includeInactive?: boolean } }>,
+    req: FastifyRequest<{
+      Querystring: {
+        q?: string;
+        limit?: number;
+        offset?: number;
+        includeInactive?: boolean;
+      };
+    }>,
   ) => {
     const includeInactive = req.query.includeInactive === true;
     if (includeInactive && req.user?.role !== 'ADMIN') {
@@ -19,8 +26,13 @@ export class ProductsController {
         'ADMIN_ONLY_QUERY',
       );
     }
-    const products = await this.service.list({ includeInactive });
-    return { status: 'success', data: { products } };
+    const result = await this.service.list({
+      q: req.query.q,
+      limit: req.query.limit,
+      offset: req.query.offset,
+      includeInactive,
+    });
+    return { status: 'success', data: result };
   };
 
   getOne = async (req: FastifyRequest<{ Params: { idOrSlug: string } }>) => {

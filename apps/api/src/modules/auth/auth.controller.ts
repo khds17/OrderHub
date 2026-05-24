@@ -1,5 +1,11 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { LoginInput, RefreshInput, RegisterInput } from '@orderhub/contracts';
+import type {
+  ChangePasswordInput,
+  LoginInput,
+  RefreshInput,
+  RegisterInput,
+} from '@orderhub/contracts';
+import { UnauthorizedError } from '../../utils/errors.js';
 import type { AuthService } from './auth.service.js';
 
 // `Cache-Control: no-store` is set by an onSend hook registered in
@@ -30,6 +36,20 @@ export class AuthController {
     reply: FastifyReply,
   ) => {
     await this.service.logout(req.body.refreshToken);
+    return reply.status(204).send();
+  };
+
+  changePassword = async (
+    req: FastifyRequest<{ Body: ChangePasswordInput }>,
+    reply: FastifyReply,
+  ) => {
+    const claims = req.user;
+    if (!claims) throw new UnauthorizedError('Not authenticated');
+    await this.service.changePassword({
+      userId: claims.sub,
+      currentPassword: req.body.currentPassword,
+      newPassword: req.body.newPassword,
+    });
     return reply.status(204).send();
   };
 }

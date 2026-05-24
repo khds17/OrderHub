@@ -1,12 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  ChangePasswordSchema,
   LoginSchema,
   RefreshSchema,
   RegisterSchema,
+  type ChangePasswordInput,
   type LoginInput,
   type RefreshInput,
   type RegisterInput,
 } from '@orderhub/contracts';
+import { authenticate } from '../../middleware/auth.js';
 import { validate } from '../../middleware/validate.js';
 import type { AuthController } from './auth.controller.js';
 
@@ -42,5 +45,12 @@ export function registerAuthRoutes(
     '/auth/logout',
     { preHandler: validate({ body: RefreshSchema }) },
     controller.logout,
+  );
+  app.post<{ Body: ChangePasswordInput }>(
+    '/auth/change-password',
+    {
+      preHandler: [authenticate, validate({ body: ChangePasswordSchema })],
+    },
+    controller.changePassword,
   );
 }

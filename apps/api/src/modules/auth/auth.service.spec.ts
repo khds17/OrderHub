@@ -13,6 +13,8 @@ const makeUser = (overrides: Partial<UserRow> = {}): UserRow => ({
   email: 'alice@test.dev',
   password_hash: 'placeholder',
   name: 'Alice',
+  surname: null,
+  address: null,
   role: 'CLIENT',
   created_at: new Date('2024-01-01T00:00:00Z'),
   updated_at: new Date('2024-01-01T00:00:00Z'),
@@ -27,6 +29,8 @@ const makeRepo = () =>
     createRefreshToken: jest.fn(),
     findValidRefreshToken: jest.fn(),
     revokeRefreshToken: jest.fn(),
+    revokeAllRefreshTokensForUser: jest.fn(),
+    updatePasswordHash: jest.fn(),
   }) as unknown as jest.Mocked<AuthRepository>;
 
 describe('AuthService.register', () => {
@@ -164,5 +168,72 @@ describe('AuthService.logout', () => {
     const arg = repo.revokeRefreshToken.mock.calls[0]?.[0];
     expect(arg).not.toBe('the-raw-token');
     expect(arg).toMatch(/^[a-f0-9]{64}$/);
+  });
+});
+
+describe('AuthService.changePassword', () => {
+  let repo: jest.Mocked<AuthRepository>;
+  let svc: AuthService;
+  let existingHash: string;
+
+  beforeEach(async () => {
+    repo = makeRepo();
+    svc = new AuthService(repo, DEPS);
+    existingHash = await bcrypt.hash('correct-old-password', 4);
+    repo.findUserById.mockResolvedValue(
+      makeUser({ password_hash: existingHash }),
+    );
+    repo.updatePasswordHash.mockResolvedValue(undefined);
+    repo.revokeAllRefreshTokensForUser.mockResolvedValue(undefined);
+  });
+
+  it('hashes and stores the new password when the current one verifies', async () => {
+    await svc.changePassword({
+      userId: 'user-1',
+      currentPassword: 'correct-old-password',
+      newPassword: 'brand-new-password',
+    });
+
+    expect(repo.updatePasswordHash).toHaveBeenCalledTimes(1);
+    const [userIdArg, newHash] = repo.updatePasswordHash.mock.calls[0]!;
+    expect(userIdArg).toBe('user-1');
+    expect(newHash).not.toBe('brand-new-password');
+    expect(await bcrypt.compare('brand-new-password', newHash)).toBe(true);
+  });
+
+  it('revokes every refresh token after a successful change', async () => {
+    await svc.changePassword({
+      userId: 'user-1',
+      currentPassword: 'correct-old-password',
+      newPassword: 'brand-new-password',
+    });
+
+    expect(repo.revokeAllRefreshTokensForUser).toHaveBeenCalledWith('user-1');
+  });
+
+  it('rejects with INVALID_CURRENT_PASSWORD (401) when the current password is wrong', async () => {
+    await expect(
+      svc.changePassword({
+        userId: 'user-1',
+        currentPassword: 'wrong-password',
+        newPassword: 'brand-new-password',
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_CURRENT_PASSWORD',
+      statusCode: 401,
+    });
+    expect(repo.updatePasswordHash).not.toHaveBeenCalled();
+    expect(repo.revokeAllRefreshTokensForUser).not.toHaveBeenCalled();
+  });
+
+  it('rejects with USER_NOT_FOUND (404) if the user has vanished', async () => {
+    repo.findUserById.mockResolvedValue(null);
+    await expect(
+      svc.changePassword({
+        userId: 'ghost',
+        currentPassword: 'anything',
+        newPassword: 'brand-new-password',
+      }),
+    ).rejects.toMatchObject({ code: 'USER_NOT_FOUND', statusCode: 404 });
   });
 });

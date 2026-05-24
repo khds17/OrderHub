@@ -1,6 +1,10 @@
 import type { Pool, PoolClient } from 'pg';
 import type { OrderStatus, PaymentStatus } from '@orderhub/contracts';
 
+// Re-export so the service layer doesn't need to import @orderhub/contracts
+// just to call the enum-narrowed methods below.
+export type { OrderStatus, PaymentStatus };
+
 export type OrderRow = {
   id: string;
   user_id: string;
@@ -150,5 +154,97 @@ export class OrdersRepository {
        WHERE id = $1`,
       [productId, quantity],
     );
+  }
+
+  async findOrderForUpdate(
+    client: PoolClient,
+    id: string,
+  ): Promise<OrderRow | null> {
+    const { rows } = await client.query<OrderRow>(
+      `SELECT ${ORDER_COLS} FROM orders WHERE id = $1 FOR UPDATE`,
+      [id],
+    );
+    return rows[0] ?? null;
+  }
+
+  async findOrderItemsTx(
+    client: PoolClient,
+    orderId: string,
+  ): Promise<OrderItemRow[]> {
+    const { rows } = await client.query<OrderItemRow>(
+      `SELECT ${ITEM_COLS} FROM order_items WHERE order_id = $1`,
+      [orderId],
+    );
+    return rows;
+  }
+
+  async updateOrderStatus(
+    client: PoolClient,
+    id: string,
+    status: OrderStatus,
+  ): Promise<OrderRow> {
+    // Cast the parameter to order_status; pg sends params as text and Postgres
+    // will not implicitly coerce text to an enum on UPDATE.
+    const { rows } = await client.query<OrderRow>(
+      `UPDATE orders
+       SET status = $2::order_status, updated_at = now()
+       WHERE id = $1
+       RETURNING ${ORDER_COLS}`,
+      [id, status],
+    );
+    const row = rows[0];
+    if (!row) throw new Error('updateOrderStatus: no row returned');
+    return row;
+  }
+
+  async restoreStock(
+    client: PoolClient,
+    productId: string,
+    quantity: number,
+  ): Promise<void> {
+    await client.query(
+      `UPDATE products
+       SET stock = stock + $2, updated_at = now()
+       WHERE id = $1`,
+      [productId, quantity],
+    );
+  }
+
+  /**
+   * Mark an order as paid in a single statement: payment_status → PAID and
+   * order status → CONFIRMED, with their enum casts. Atomic by design so the
+   * two columns can never diverge mid-update.
+   */
+  async markOrderPaid(client: PoolClient, id: string): Promise<OrderRow> {
+    const { rows } = await client.query<OrderRow>(
+      `UPDATE orders
+       SET status = 'CONFIRMED'::order_status,
+           payment_status = 'PAID'::payment_status,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING ${ORDER_COLS}`,
+      [id],
+    );
+    const row = rows[0];
+    if (!row) throw new Error('markOrderPaid: no row returned');
+    return row;
+  }
+
+  /**
+   * Record a declined payment attempt. The order status stays PENDING so the
+   * customer can retry; only payment_status flips to FAILED.
+   */
+  async markPaymentFailed(client: PoolClient, id: string): Promise<OrderRow> {
+    const { rows } = await client.query<OrderRow>(
+      `UPDATE orders
+       SET payment_status = 'FAILED'::payment_status,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING ${ORDER_COLS}`,
+      [id],
+    );
+    const row = rows[0];
+    if (!row) throw new Error('markPaymentFailed: no row returned');
+    return row;
   }
 }

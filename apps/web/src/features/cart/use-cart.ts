@@ -13,30 +13,51 @@ export type CartItem = {
 
 type CartState = {
   items: CartItem[];
+  /**
+   * Holds the item a guest tried to add before being redirected to /login.
+   * Persisted alongside `items` so it survives the navigation; consumed by
+   * the login/register pages on successful auth.
+   */
+  pendingAdd: CartItem | null;
   add: (item: Omit<CartItem, 'quantity'>, quantity?: number) => void;
   setQuantity: (productId: string, quantity: number) => void;
   remove: (productId: string) => void;
   clear: () => void;
+  setPendingAdd: (item: CartItem | null) => void;
+  /**
+   * If a pendingAdd is stashed, merge it into items (using the same dedupe
+   * rules as `add`) and clear the pending slot. Returns true if anything was
+   * consumed so callers can decide whether to redirect to /cart.
+   */
+  consumePendingAdd: () => boolean;
 };
+
+/**
+ * Merge an item into a cart-items list using the upsert-by-productId rule.
+ * Pulled out so `add` and `consumePendingAdd` stay consistent — diverging
+ * would mean a pending guest add behaves differently from a direct add.
+ */
+function mergeItem(items: CartItem[], next: CartItem): CartItem[] {
+  const existing = items.find((i) => i.productId === next.productId);
+  if (existing) {
+    return items.map((i) =>
+      i.productId === next.productId
+        ? { ...i, quantity: i.quantity + next.quantity }
+        : i,
+    );
+  }
+  return [...items, next];
+}
 
 export const useCart = create<CartState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       items: [],
+      pendingAdd: null,
       add: (item, quantity = 1) =>
-        set((state) => {
-          const existing = state.items.find((i) => i.productId === item.productId);
-          if (existing) {
-            return {
-              items: state.items.map((i) =>
-                i.productId === item.productId
-                  ? { ...i, quantity: i.quantity + quantity }
-                  : i,
-              ),
-            };
-          }
-          return { items: [...state.items, { ...item, quantity }] };
-        }),
+        set((state) => ({
+          items: mergeItem(state.items, { ...item, quantity }),
+        })),
       setQuantity: (productId, quantity) =>
         set((state) => ({
           items:
@@ -50,7 +71,17 @@ export const useCart = create<CartState>()(
         set((state) => ({
           items: state.items.filter((i) => i.productId !== productId),
         })),
-      clear: () => set({ items: [] }),
+      clear: () => set({ items: [], pendingAdd: null }),
+      setPendingAdd: (item) => set({ pendingAdd: item }),
+      consumePendingAdd: () => {
+        const pending = get().pendingAdd;
+        if (!pending) return false;
+        set((state) => ({
+          items: mergeItem(state.items, pending),
+          pendingAdd: null,
+        }));
+        return true;
+      },
     }),
     { name: 'orderhub_cart' },
   ),

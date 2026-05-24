@@ -6,6 +6,8 @@ export type UserRow = {
   email: string;
   password_hash: string;
   name: string;
+  surname: string | null;
+  address: string | null;
   role: UserRole;
   created_at: Date;
   updated_at: Date;
@@ -25,7 +27,7 @@ export class AuthRepository {
 
   async findUserByEmail(email: string): Promise<UserRow | null> {
     const { rows } = await this.pool.query<UserRow>(
-      `SELECT id, email, password_hash, name, role, created_at, updated_at
+      `SELECT id, email, password_hash, name, surname, address, role, created_at, updated_at
        FROM users
        WHERE email = $1`,
       [email],
@@ -35,7 +37,7 @@ export class AuthRepository {
 
   async findUserById(id: string): Promise<UserRow | null> {
     const { rows } = await this.pool.query<UserRow>(
-      `SELECT id, email, password_hash, name, role, created_at, updated_at
+      `SELECT id, email, password_hash, name, surname, address, role, created_at, updated_at
        FROM users
        WHERE id = $1`,
       [id],
@@ -51,8 +53,8 @@ export class AuthRepository {
   }): Promise<UserRow> {
     const { rows } = await this.pool.query<UserRow>(
       `INSERT INTO users (email, password_hash, name, role)
-       VALUES ($1, $2, $3, COALESCE($4, 'CLIENT'))
-       RETURNING id, email, password_hash, name, role, created_at, updated_at`,
+       VALUES ($1, $2, $3, COALESCE($4::user_role, 'CLIENT'::user_role))
+       RETURNING id, email, password_hash, name, surname, address, role, created_at, updated_at`,
       [input.email, input.passwordHash, input.name, input.role ?? null],
     );
     const row = rows[0];
@@ -90,6 +92,29 @@ export class AuthRepository {
        SET revoked_at = now()
        WHERE token_hash = $1 AND revoked_at IS NULL`,
       [tokenHash],
+    );
+  }
+
+  /**
+   * Bulk-revoke every active refresh token for a user. Called after a
+   * password change so any session that knew the old password is killed —
+   * a leaked token can't outlive the credential it was minted under.
+   */
+  async revokeAllRefreshTokensForUser(userId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE refresh_tokens
+       SET revoked_at = now()
+       WHERE user_id = $1 AND revoked_at IS NULL`,
+      [userId],
+    );
+  }
+
+  async updatePasswordHash(userId: string, passwordHash: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE users
+       SET password_hash = $2, updated_at = now()
+       WHERE id = $1`,
+      [userId, passwordHash],
     );
   }
 }

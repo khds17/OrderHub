@@ -1,11 +1,13 @@
 import type { Pool } from 'pg';
 import type {
+  CardInput,
   CreateOrderItemInput,
   Order,
   OrderItem,
   OrderWithItems,
   UserRole,
 } from '@orderhub/contracts';
+import { TEST_CARDS } from '@orderhub/contracts';
 import { withTransaction } from '../../db/transaction.js';
 import {
   AppError,
@@ -151,6 +153,156 @@ export class OrdersService {
       ...toPublicOrder(order),
       items: items.map(toPublicItem),
     };
+  }
+
+  /**
+   * Cancel an order and restore stock for each line item, atomically.
+   *
+   * Rules:
+   *   - Allowed source statuses: PENDING, CONFIRMED.
+   *   - SHIPPED → 409 ORDER_NOT_CANCELLABLE (too late to cancel).
+   *   - CANCELLED → 409 ORDER_ALREADY_CANCELLED (idempotency signal).
+   *   - CLIENT may only cancel their own orders; mismatch surfaces as 404 to
+   *     avoid leaking order IDs (mirrors getOrderById).
+   *   - ADMIN / SUPPORT may cancel any cancellable order.
+   *
+   * The order row is locked FOR UPDATE so concurrent cancel attempts serialize:
+   * the second caller sees status=CANCELLED and gets ORDER_ALREADY_CANCELLED
+   * rather than double-restoring stock.
+   */
+  async cancelOrder(
+    orderId: string,
+    requesterId: string,
+    requesterRole: UserRole,
+  ): Promise<OrderWithItems> {
+    return await withTransaction(this.pool, async (client) => {
+      const order = await this.repo.findOrderForUpdate(client, orderId);
+      if (!order) {
+        throw new NotFoundError('ORDER_NOT_FOUND', 'Order not found');
+      }
+      if (requesterRole === 'CLIENT' && order.user_id !== requesterId) {
+        throw new NotFoundError('ORDER_NOT_FOUND', 'Order not found');
+      }
+      if (order.status === 'CANCELLED') {
+        throw new ConflictError(
+          'ORDER_ALREADY_CANCELLED',
+          'Order is already cancelled',
+        );
+      }
+      if (order.status === 'SHIPPED') {
+        throw new ConflictError(
+          'ORDER_NOT_CANCELLABLE',
+          'Shipped orders cannot be cancelled',
+        );
+      }
+      // Remaining allowed source statuses: PENDING, CONFIRMED.
+
+      const items = await this.repo.findOrderItemsTx(client, orderId);
+
+      for (const item of items) {
+        await this.repo.restoreStock(client, item.product_id, item.quantity);
+      }
+
+      const updated = await this.repo.updateOrderStatus(
+        client,
+        orderId,
+        'CANCELLED',
+      );
+
+      return {
+        ...toPublicOrder(updated),
+        items: items.map(toPublicItem),
+      };
+    });
+  }
+
+  /**
+   * Pay for an order using a fake card. There is no real processor — the
+   * "decision" comes from inspecting the PAN against TEST_CARDS.
+   *
+   * Rules:
+   *   - Only the order owner may pay (admins/support are deliberately blocked;
+   *     payment is the customer's action). CLIENT non-owner surfaces as 404 to
+   *     avoid leaking order IDs.
+   *   - Order must be in status PENDING (CONFIRMED/SHIPPED/CANCELLED are 409).
+   *   - payment_status must not be PAID (409 ORDER_ALREADY_PAID). A previous
+   *     FAILED attempt is allowed — the customer may retry with a different
+   *     card.
+   *   - On decline: payment_status flips to FAILED, status stays PENDING, and
+   *     the call surfaces as 402 PAYMENT_DECLINED. The FAILED write is
+   *     committed (returned from inside the transaction as a sentinel) before
+   *     the error is thrown so the row reflects the attempt.
+   *   - On success: status → CONFIRMED, payment_status → PAID, atomically.
+   */
+  async payOrder(
+    orderId: string,
+    requesterId: string,
+    requesterRole: UserRole,
+    card: CardInput,
+  ): Promise<OrderWithItems> {
+    type PayOutcome =
+      | { kind: 'paid'; result: OrderWithItems }
+      | { kind: 'declined' };
+
+    const outcome: PayOutcome = await withTransaction(this.pool, async (client) => {
+      const order = await this.repo.findOrderForUpdate(client, orderId);
+      if (!order) {
+        throw new NotFoundError('ORDER_NOT_FOUND', 'Order not found');
+      }
+      // Only the order's owner can pay. Admins/support deliberately can't.
+      if (order.user_id !== requesterId) {
+        // For non-owner CLIENTs hide existence (404). For ADMIN/SUPPORT we
+        // surface a clear 403 — they know the order exists, the rule is just
+        // that payment is the customer's action.
+        if (requesterRole === 'CLIENT') {
+          throw new NotFoundError('ORDER_NOT_FOUND', 'Order not found');
+        }
+        throw new AppError(
+          403,
+          'PAYMENT_FORBIDDEN',
+          'Only the order owner can pay for an order',
+        );
+      }
+      if (order.payment_status === 'PAID') {
+        throw new ConflictError(
+          'ORDER_ALREADY_PAID',
+          'Order has already been paid',
+        );
+      }
+      if (order.status !== 'PENDING') {
+        throw new ConflictError(
+          'ORDER_NOT_PAYABLE',
+          `Order in status ${order.status} cannot be paid`,
+        );
+      }
+
+      // Mock "processor". The magic PAN always declines; everything else of
+      // valid shape succeeds.
+      if (card.number === TEST_CARDS.ALWAYS_DECLINE) {
+        await this.repo.markPaymentFailed(client, orderId);
+        // Defer the throw to outside the transaction so this UPDATE commits.
+        return { kind: 'declined' };
+      }
+
+      const updated = await this.repo.markOrderPaid(client, orderId);
+      const items = await this.repo.findOrderItemsTx(client, orderId);
+      return {
+        kind: 'paid',
+        result: {
+          ...toPublicOrder(updated),
+          items: items.map(toPublicItem),
+        },
+      };
+    });
+
+    if (outcome.kind === 'declined') {
+      throw new AppError(
+        402,
+        'PAYMENT_DECLINED',
+        'Card was declined by the issuer',
+      );
+    }
+    return outcome.result;
   }
 }
 

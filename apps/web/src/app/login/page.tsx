@@ -1,6 +1,7 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
+import { Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
@@ -10,11 +11,27 @@ import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form-field';
 import { ApiError } from '@/lib/api-client';
 import { applyServerErrors } from '@/lib/form-errors';
+import { safeNextPath } from '@/lib/safe-next';
 import { useAuth } from '@/features/auth/use-auth';
+import { useCart } from '@/features/cart/use-cart';
 
+// Next.js 15 requires useSearchParams() callers to sit under a Suspense
+// boundary, otherwise the page fails to prerender. The form itself has no
+// loading state worth showing in the fallback, so an empty fallback is fine.
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageInner />
+    </Suspense>
+  );
+}
+
+function LoginPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const next = safeNextPath(searchParams.get('next'), '/products');
   const login = useAuth((s) => s.login);
+  const consumePendingAdd = useCart((s) => s.consumePendingAdd);
   const {
     register,
     handleSubmit,
@@ -28,7 +45,10 @@ export default function LoginPage() {
   async function onSubmit(values: LoginInput) {
     try {
       await login(values.email, values.password);
-      router.replace('/products');
+      // If the user was bounced here mid-Add-to-cart, push the pending item
+      // into the real cart before navigating.
+      consumePendingAdd();
+      router.replace(next);
     } catch (err) {
       const handled = applyServerErrors(setError, err);
       if (!handled) {
@@ -71,7 +91,14 @@ export default function LoginPage() {
       </form>
       <p className="text-sm text-slate-600">
         Don&apos;t have an account?{' '}
-        <Link href="/register" className="text-indigo-600 hover:underline">
+        <Link
+          href={
+            next === '/products'
+              ? '/register'
+              : `/register?next=${encodeURIComponent(next)}`
+          }
+          className="text-indigo-600 hover:underline"
+        >
           Register
         </Link>
       </p>

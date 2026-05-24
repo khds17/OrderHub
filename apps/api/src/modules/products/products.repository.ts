@@ -26,15 +26,43 @@ const SELECT_COLS = `
 export class ProductsRepository {
   constructor(private readonly pool: Pool) {}
 
-  async list(options: { includeInactive: boolean }): Promise<ProductRow[]> {
-    const where = options.includeInactive ? '' : 'WHERE active = true';
+  async list(options: {
+    q?: string;
+    limit: number;
+    offset: number;
+    includeInactive: boolean;
+  }): Promise<ProductRow[]> {
+    const { sql: whereSql, params } = buildListWhere(options);
+    const limitIdx = params.length + 1;
+    const offsetIdx = params.length + 2;
     const { rows } = await this.pool.query<ProductRow>(
       `SELECT ${SELECT_COLS}
        FROM products
-       ${where}
-       ORDER BY created_at DESC`,
+       ${whereSql}
+       ORDER BY created_at DESC
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      [...params, options.limit, options.offset],
     );
     return rows;
+  }
+
+  /**
+   * Count of rows matching the same filter `list` would apply (ignoring
+   * limit/offset). Shares `buildListWhere` with `list` so the two never
+   * drift — a mismatch would skew the "Showing X of Y" UI and the
+   * has-next-page check.
+   */
+  async count(options: {
+    q?: string;
+    includeInactive: boolean;
+  }): Promise<number> {
+    const { sql: whereSql, params } = buildListWhere(options);
+    // count(*) comes back as bigint → text from pg; parse to number after.
+    const { rows } = await this.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM products ${whereSql}`,
+      params,
+    );
+    return Number(rows[0]?.count ?? '0');
   }
 
   async findByIdOrSlug(idOrSlug: string): Promise<ProductRow | null> {
@@ -139,4 +167,40 @@ export class ProductsRepository {
     );
     return rows[0] ?? null;
   }
+}
+
+/**
+ * Shared WHERE-clause builder for list/count so they apply identical filters.
+ * Returns the `WHERE ...` SQL fragment (empty string when no conditions) and
+ * the positional params it references (1-indexed in caller SQL).
+ *
+ * Search semantics:
+ *   - case-insensitive substring match on (name OR description) via ILIKE
+ *   - user-supplied `%` and `_` are escaped so they can't widen the match
+ *   - the LIKE escape character is set to `\` via ESCAPE clause
+ */
+function buildListWhere(options: {
+  q?: string;
+  includeInactive: boolean;
+}): { sql: string; params: unknown[] } {
+  const params: unknown[] = [];
+  const conds: string[] = [];
+
+  if (!options.includeInactive) {
+    conds.push('active = true');
+  }
+
+  if (options.q) {
+    // Escape LIKE meta-chars in user input so "50_off" doesn't match anything
+    // with a 50 followed by some char followed by off.
+    const escaped = options.q.replace(/[\\%_]/g, '\\$&');
+    params.push(`%${escaped}%`);
+    const i = params.length;
+    conds.push(`(name ILIKE $${i} ESCAPE '\\' OR description ILIKE $${i} ESCAPE '\\')`);
+  }
+
+  return {
+    sql: conds.length ? `WHERE ${conds.join(' AND ')}` : '',
+    params,
+  };
 }

@@ -56,6 +56,8 @@ function toPublic(row: UserPublicRow): User {
     id: row.id,
     email: row.email,
     name: row.name,
+    surname: row.surname,
+    address: row.address,
     role: row.role,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),

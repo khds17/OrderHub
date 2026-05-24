@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { CreateOrderInput } from '@orderhub/contracts';
+import type { CreateOrderInput, PayOrderInput } from '@orderhub/contracts';
 import { UnauthorizedError } from '../../utils/errors.js';
 import type { OrdersService } from './orders.service.js';
 
@@ -48,6 +48,32 @@ export class OrdersController {
       req.params.id,
       user.sub,
       user.role,
+    );
+    return { status: 'success', data: { order } };
+  };
+
+  cancel = async (req: FastifyRequest<{ Params: { id: string } }>) => {
+    const user = requireUser(req);
+    const order = await this.service.cancelOrder(
+      req.params.id,
+      user.sub,
+      user.role,
+    );
+    return { status: 'success', data: { order } };
+  };
+
+  pay = async (
+    req: FastifyRequest<{
+      Params: { id: string };
+      Body: PayOrderInput;
+    }>,
+  ) => {
+    const user = requireUser(req);
+    const order = await this.service.payOrder(
+      req.params.id,
+      user.sub,
+      user.role,
+      req.body.card,
     );
     return { status: 'success', data: { order } };
   };

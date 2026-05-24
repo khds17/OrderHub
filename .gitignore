@@ -11,3 +11,6 @@ coverage/
 .DS_Store
 *.tsbuildinfo
 .claude/
+
+# Uploaded product images — written to disk by the API at runtime.
+apps/api/uploads/

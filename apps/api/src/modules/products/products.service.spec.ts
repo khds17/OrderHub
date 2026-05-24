@@ -19,6 +19,7 @@ const makeRow = (overrides: Partial<ProductRow> = {}): ProductRow => ({
 const makeRepo = () =>
   ({
     list: jest.fn(),
+    count: jest.fn(),
     findByIdOrSlug: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
@@ -116,18 +117,89 @@ describe('ProductsService.list', () => {
   beforeEach(() => {
     repo = makeRepo();
     svc = new ProductsService(repo);
+    repo.list.mockResolvedValue([]);
+    repo.count.mockResolvedValue(0);
   });
 
-  it('defaults includeInactive to false', async () => {
-    repo.list.mockResolvedValue([]);
+  it('defaults includeInactive=false, limit=12, offset=0', async () => {
     await svc.list();
-    expect(repo.list).toHaveBeenCalledWith({ includeInactive: false });
+    expect(repo.list).toHaveBeenCalledWith({
+      q: undefined,
+      limit: 12,
+      offset: 0,
+      includeInactive: false,
+    });
+    expect(repo.count).toHaveBeenCalledWith({
+      q: undefined,
+      includeInactive: false,
+    });
+  });
+
+  it('returns products + pagination envelope with total from the count query', async () => {
+    repo.list.mockResolvedValue([makeRow()]);
+    repo.count.mockResolvedValue(57);
+
+    const result = await svc.list({ limit: 12, offset: 24 });
+
+    expect(result.products).toHaveLength(1);
+    expect(result.pagination).toEqual({ limit: 12, offset: 24, total: 57 });
+  });
+
+  it('passes limit/offset through verbatim', async () => {
+    await svc.list({ limit: 5, offset: 10 });
+    expect(repo.list).toHaveBeenCalledWith({
+      q: undefined,
+      limit: 5,
+      offset: 10,
+      includeInactive: false,
+    });
+  });
+
+  it('passes q through to both list and count so totals match the filtered page', async () => {
+    await svc.list({ q: 'widget' });
+    expect(repo.list).toHaveBeenCalledWith({
+      q: 'widget',
+      limit: 12,
+      offset: 0,
+      includeInactive: false,
+    });
+    expect(repo.count).toHaveBeenCalledWith({
+      q: 'widget',
+      includeInactive: false,
+    });
   });
 
   it('passes includeInactive=true through to the repo when requested', async () => {
-    repo.list.mockResolvedValue([]);
     await svc.list({ includeInactive: true });
-    expect(repo.list).toHaveBeenCalledWith({ includeInactive: true });
+    expect(repo.list).toHaveBeenCalledWith({
+      q: undefined,
+      limit: 12,
+      offset: 0,
+      includeInactive: true,
+    });
+    expect(repo.count).toHaveBeenCalledWith({
+      q: undefined,
+      includeInactive: true,
+    });
+  });
+
+  it('runs list and count in parallel (single tick, both pending before either resolves)', async () => {
+    // Pin one of the calls so the other has to be issued before the first
+    // resolves — proves the awaits aren't serial.
+    let resolveList: (rows: ProductRow[]) => void;
+    repo.list.mockImplementationOnce(
+      () =>
+        new Promise<ProductRow[]>((res) => {
+          resolveList = res;
+        }),
+    );
+    repo.count.mockResolvedValue(0);
+
+    const promise = svc.list();
+    // count() must have been issued already, even though list() hasn't resolved.
+    expect(repo.count).toHaveBeenCalledTimes(1);
+    resolveList!([]);
+    await promise;
   });
 });
 

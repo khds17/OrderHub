@@ -2,7 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   CreateOrderSchema,
+  PayOrderSchema,
   type CreateOrderInput,
+  type PayOrderInput,
 } from '@orderhub/contracts';
 import { authenticate, authorize } from '../../middleware/auth.js';
 import { validate } from '../../middleware/validate.js';
@@ -66,5 +68,31 @@ export function registerOrdersRoutes(
       ],
     },
     controller.getOne,
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/orders/:id/cancel',
+    {
+      preHandler: [
+        authenticate,
+        authorize('CLIENT', 'ADMIN', 'SUPPORT'),
+        validate({ params: IdParamSchema }),
+      ],
+    },
+    controller.cancel,
+  );
+
+  app.post<{ Params: { id: string }; Body: PayOrderInput }>(
+    '/orders/:id/pay',
+    {
+      preHandler: [
+        authenticate,
+        // Payment is the customer's action. The service layer also enforces
+        // ownership; the role gate here is the first line of defence.
+        authorize('CLIENT'),
+        validate({ params: IdParamSchema, body: PayOrderSchema }),
+      ],
+    },
+    controller.pay,
   );
 }

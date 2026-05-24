@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   CreateProductSchema,
+  ProductListQuerySchema,
   UpdateProductSchema,
   type CreateProductInput,
   type UpdateProductInput,
@@ -17,25 +18,23 @@ import type { ProductsController } from './products.controller.js';
 const IdParamSchema = z.object({ id: z.string().uuid() });
 const IdOrSlugParamSchema = z.object({ idOrSlug: z.string().min(1) });
 
-// Coerce "true"/"false" strings from the querystring into booleans, then
-// reject anything else.
-const ListProductsQuerySchema = z.object({
-  includeInactive: z
-    .union([z.literal('true'), z.literal('false')])
-    .transform((v) => v === 'true')
-    .optional(),
-});
-
 export function registerProductsRoutes(
   app: FastifyInstance,
   controller: ProductsController,
 ): void {
-  app.get<{ Querystring: { includeInactive?: boolean } }>(
+  app.get<{
+    Querystring: {
+      q?: string;
+      limit?: number;
+      offset?: number;
+      includeInactive?: boolean;
+    };
+  }>(
     '/products',
     {
       preHandler: [
         optionalAuthenticate,
-        validate({ query: ListProductsQuerySchema }),
+        validate({ query: ProductListQuerySchema }),
       ],
     },
     controller.list,

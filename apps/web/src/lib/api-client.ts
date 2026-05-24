@@ -1,14 +1,20 @@
 import type {
   AuthResponse,
   AuthTokens,
+  ChangePasswordInput,
   CreateOrderInput,
   CreateProductInput,
   LoginInput,
   Order,
   OrderWithItems,
+  Pagination,
+  PaymentMethod,
+  PayOrderInput,
   Product,
+  ProductImage,
   RefreshInput,
   RegisterInput,
+  SavePaymentMethodInput,
   UpdateProductInput,
   UpdateUserInput,
   User,
@@ -135,6 +141,49 @@ async function request<T>(
   return parsed.data;
 }
 
+/**
+ * Multipart-aware POST. Mirrors `request()`'s auth-refresh-on-401 and
+ * envelope parsing, but sends a FormData body without setting Content-Type
+ * (browsers set it with the correct multipart boundary).
+ */
+async function requestMultipart<T>(
+  path: string,
+  formData: FormData,
+): Promise<T> {
+  const send = async (): Promise<Response> => {
+    const headers: Record<string, string> = {};
+    const token = tokenStorage.getAccess();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+  };
+
+  let res = await send();
+  if (res.status === 401) {
+    const refreshed = await attemptRefresh();
+    if (refreshed) {
+      res = await send();
+    } else {
+      tokenStorage.clear();
+      onAuthFailure?.();
+    }
+  }
+  if (res.status === 204) return undefined as T;
+  let parsed: Envelope<T>;
+  try {
+    parsed = (await res.json()) as Envelope<T>;
+  } catch {
+    throw new ApiError(res.status, 'UNKNOWN', `HTTP ${res.status}`);
+  }
+  if (parsed.status === 'error') {
+    throw new ApiError(res.status, parsed.code, parsed.message, parsed.errors);
+  }
+  return parsed.data;
+}
+
 type RefreshResponseData = { tokens: AuthTokens };
 
 export const api = {
@@ -163,6 +212,11 @@ export const api = {
         body: input,
         auth: false,
       }),
+    changePassword: (input: ChangePasswordInput) =>
+      request<void>('/auth/change-password', {
+        method: 'POST',
+        body: input,
+      }),
   },
   users: {
     me: () => request<{ user: User }>('/users/me'),
@@ -170,14 +224,42 @@ export const api = {
       request<{ user: User }>('/users/me', { method: 'PATCH', body: input }),
     list: () => request<{ users: User[] }>('/users'),
     byId: (id: string) => request<{ user: User }>(`/users/${id}`),
+    paymentMethod: {
+      get: () =>
+        request<{ paymentMethod: PaymentMethod | null }>(
+          '/users/me/payment-method',
+        ),
+      save: (input: SavePaymentMethodInput) =>
+        request<{ paymentMethod: PaymentMethod }>('/users/me/payment-method', {
+          method: 'PUT',
+          body: input,
+        }),
+      delete: () =>
+        request<void>('/users/me/payment-method', { method: 'DELETE' }),
+    },
   },
   products: {
-    list: (options: { includeInactive?: boolean } = {}) => {
-      const qs = options.includeInactive ? '?includeInactive=true' : '';
-      return request<{ products: Product[] }>(`/products${qs}`, {
-        // Send auth when we ask for inactive products; the server requires admin.
-        auth: options.includeInactive === true,
-      });
+    list: (
+      options: {
+        q?: string;
+        limit?: number;
+        offset?: number;
+        includeInactive?: boolean;
+      } = {},
+    ) => {
+      const params: string[] = [];
+      if (options.q) params.push(`q=${encodeURIComponent(options.q)}`);
+      if (options.limit !== undefined) params.push(`limit=${options.limit}`);
+      if (options.offset !== undefined) params.push(`offset=${options.offset}`);
+      if (options.includeInactive) params.push('includeInactive=true');
+      const qs = params.length === 0 ? '' : `?${params.join('&')}`;
+      return request<{ products: Product[]; pagination: Pagination }>(
+        `/products${qs}`,
+        {
+          // Send auth when we ask for inactive products; the server requires admin.
+          auth: options.includeInactive === true,
+        },
+      );
     },
     byIdOrSlug: (idOrSlug: string) =>
       request<{ product: Product }>(`/products/${encodeURIComponent(idOrSlug)}`, {
@@ -198,6 +280,18 @@ export const api = {
       request<{ product: Product }>(`/products/${id}/activate`, {
         method: 'PATCH',
       }),
+    uploadImage: (id: string, file: File) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return requestMultipart<{ image: ProductImage }>(
+        `/products/${id}/images`,
+        formData,
+      );
+    },
+    deleteImage: (id: string, imageId: string) =>
+      request<void>(`/products/${id}/images/${imageId}`, {
+        method: 'DELETE',
+      }),
   },
   orders: {
     create: (input: CreateOrderInput) =>
@@ -215,6 +309,15 @@ export const api = {
       ),
     byId: (id: string) =>
       request<{ order: OrderWithItems }>(`/orders/${id}`),
+    cancel: (id: string) =>
+      request<{ order: OrderWithItems }>(`/orders/${id}/cancel`, {
+        method: 'POST',
+      }),
+    pay: (id: string, input: PayOrderInput) =>
+      request<{ order: OrderWithItems }>(`/orders/${id}/pay`, {
+        method: 'POST',
+        body: input,
+      }),
   },
 };
 
